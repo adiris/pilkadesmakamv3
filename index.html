@@ -150,18 +150,24 @@
             setTimeout(() => { modal.classList.add('hidden'); }, 300);
         }
 
+        const TARGET_DATE = new Date('2026-12-10');
+        const TARGET_YEAR = TARGET_DATE.getFullYear();
+        const TARGET_MONTH = TARGET_DATE.getMonth();
+        const TARGET_DAY = TARGET_DATE.getDate();
+
         function getAgeOnTargetDate(birthDateStr) {
             if(!birthDateStr) return 0;
             const bDate = new Date(birthDateStr);
-            const targetDate = new Date('2026-12-10');
-            let age = targetDate.getFullYear() - bDate.getFullYear();
-            const m = targetDate.getMonth() - bDate.getMonth();
-            if (m < 0 || (m === 0 && targetDate.getDate() < bDate.getDate())) age--;
+            if(isNaN(bDate)) return 0; // Mencegah error jika tanggal kosong/salah format
+            let age = TARGET_YEAR - bDate.getFullYear();
+            const m = TARGET_MONTH - bDate.getMonth();
+            if (m < 0 || (m === 0 && TARGET_DAY < bDate.getDate())) age--;
             return age;
         }
 
         function getPemilih17List() {
-            return state.penduduk.filter(p => getAgeOnTargetDate(p.tglLahir) >= 17);
+            // Memfilter dengan pengaman tambahan (p && ...) untuk mencegah crash data kosong
+            return state.penduduk.filter(p => p && getAgeOnTargetDate(p.tglLahir) >= 17);
         }
 
         function render() {
@@ -334,9 +340,9 @@
             const nama = document.getElementById('cekNama').value.trim().toLowerCase();
             const nik = document.getElementById('cekNik').value.trim();
 
-            const found = state.penduduk.find(p => p.nik === nik && p.nama.toLowerCase().includes(nama));
+            const found = state.penduduk.find(p => String(p.nik || '') === nik && String(p.nama || '').toLowerCase().includes(nama));
             const list17 = getPemilih17List();
-            const isDpt = found && list17.some(p => p.nik === nik);
+            const isDpt = found && list17.some(p => String(p.nik || '') === nik);
 
             if (isDpt) {
                 state.cekResult = { status: true, title: "Anda Sudah Terdaftar di DPT", message: "Data Anda valid dan terdaftar sebagai Pemilih Tetap pada Pilkades Desa Makam 2026.", detail: found };
@@ -470,24 +476,45 @@
 
         function downloadDptCsv() {
             let listDpt = getPemilih17List();
-            let csvContent = "data:text/csv;charset=utf-8,No,Nama Lengkap,NIK,Jenis Kelamin,Tanggal Lahir,Alamat,RT,RW,Dusun\n";
-            listDpt.forEach((p, index) => { csvContent += `${index+1},"${p.nama}","${p.nik}","${p.jk}","${p.tglLahir}","${p.alamat}",${p.rt},${p.rw},${p.dusun}\n`; });
-            const link = document.createElement("a"); link.setAttribute("href", encodeURI(csvContent)); link.setAttribute("download", "DPT_Pilkades_Makam_2026.csv"); document.body.appendChild(link); link.click(); document.body.removeChild(link);
+            let rows = ["No,Nama Lengkap,NIK,Jenis Kelamin,Tanggal Lahir,Alamat,RT,RW,Dusun"];
+            
+            // Diubah menggunakan Push Array untuk performa download yang jauh lebih cepat pada data ribuan
+            listDpt.forEach((p, index) => { 
+                rows.push(`${index+1},"${p.nama || '-'}","${p.nik || '-'}","${p.jk || '-'}","${p.tglLahir || '-'}","${p.alamat || '-'}",${p.rt || '-'},${p.rw || '-'},${p.dusun || '-'}`); 
+            });
+            
+            const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            link.setAttribute("href", URL.createObjectURL(blob));
+            link.setAttribute("download", "DPT_Pilkades_Makam_2026.csv");
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         }
 
         function renderPendudukManager() {
+            // Optimasi fungsi Sorting agar tahan terhadap data kosong dan tidak terjadi infinite loop (Crash)
             let sortedList = [...state.penduduk].sort((a, b) => {
-                if(a.dusun !== b.dusun) return parseInt(a.dusun) - parseInt(b.dusun);
-                return a.nama.localeCompare(b.nama);
+                if (!a) return 1; 
+                if (!b) return -1;
+                
+                const dusunA = parseInt(a.dusun) || 0;
+                const dusunB = parseInt(b.dusun) || 0;
+                
+                if(dusunA !== dusunB) return dusunA - dusunB;
+                return String(a.nama || '').localeCompare(String(b.nama || ''));
             });
-            if(state.searchDusun !== 'all') sortedList = sortedList.filter(p => p.dusun === state.searchDusun);
+            
+            if(state.searchDusun !== 'all') {
+                sortedList = sortedList.filter(p => p && String(p.dusun) === String(state.searchDusun));
+            }
             if(state.searchKeyword) {
                 const kw = state.searchKeyword.toLowerCase();
-                sortedList = sortedList.filter(p => p.nama.toLowerCase().includes(kw) || p.nik.includes(kw));
+                sortedList = sortedList.filter(p => p && (String(p.nama || '').toLowerCase().includes(kw) || String(p.nik || '').includes(kw)));
             }
             
             const itemsPerPage = 100;
-            const totalPages = Math.min(150, Math.ceil(sortedList.length / itemsPerPage) || 1);
+            const totalPages = Math.ceil(sortedList.length / itemsPerPage) || 1;
             if (state.currentPage > totalPages) state.currentPage = 1;
             const startIndex = (state.currentPage - 1) * itemsPerPage;
             const paginatedList = sortedList.slice(startIndex, startIndex + itemsPerPage);
@@ -544,8 +571,17 @@
                                 <tbody class="divide-y divide-slate-100">
                                     ${paginatedList.length === 0 ? `<tr><td colspan="8" class="text-center py-6 text-slate-400">Belum ada data penduduk.</td></tr>` : paginatedList.map((p, idx) => `
                                         <tr class="hover:bg-slate-50 transition">
-                                            <td class="p-3 font-bold text-slate-500">${startIndex + idx + 1}</td><td class="p-3 font-extrabold">${p.nama}</td><td class="p-3 font-mono">${p.nik}</td><td class="p-3 font-bold">${p.jk}</td><td class="p-3">${p.tglLahir}</td><td class="p-3">${p.alamat} (RT ${p.rt}/${p.rw})</td><td class="p-3">Dusun ${p.dusun}</td>
-                                            <td class="p-3 text-center space-x-1"><button onclick="state.editingPendudukId=${p.id}; render();" class="p-1.5 bg-amber-100 text-amber-700 rounded-lg"><i class="fa-solid fa-pen"></i></button><button onclick="deletePenduduk(${p.id})" class="p-1.5 bg-rose-100 text-rose-700 rounded-lg"><i class="fa-solid fa-trash"></i></button></td>
+                                            <td class="p-3 font-bold text-slate-500">${startIndex + idx + 1}</td>
+                                            <td class="p-3 font-extrabold">${p.nama || '-'}</td>
+                                            <td class="p-3 font-mono">${p.nik || '-'}</td>
+                                            <td class="p-3 font-bold">${p.jk || '-'}</td>
+                                            <td class="p-3">${p.tglLahir || '-'}</td>
+                                            <td class="p-3">${p.alamat || '-'} (RT ${p.rt || '-'}/${p.rw || '-'})</td>
+                                            <td class="p-3">Dusun ${p.dusun || '-'}</td>
+                                            <td class="p-3 text-center space-x-1">
+                                                <button onclick="state.editingPendudukId=${p.id}; render();" class="p-1.5 bg-amber-100 text-amber-700 rounded-lg"><i class="fa-solid fa-pen"></i></button>
+                                                <button onclick="deletePenduduk(${p.id})" class="p-1.5 bg-rose-100 text-rose-700 rounded-lg"><i class="fa-solid fa-trash"></i></button>
+                                            </td>
                                         </tr>
                                     `).join('')}
                                 </tbody>
@@ -588,7 +624,7 @@
                 }
                 state.editingPendudukId = null; showModal("Berhasil", "Data diperbarui.");
             } else {
-                const newId = state.penduduk.length > 0 ? Math.max(...state.penduduk.map(p => p.id)) + 1 : 1;
+                const newId = state.penduduk.length > 0 ? state.penduduk.reduce((max, p) => p.id > max ? p.id : max, 0) + 1 : 1;
                 const newPenduduk = { id: newId, nama, nik, jk, tglLahir, alamat, rt, rw, dusun };
                 state.penduduk.push(newPenduduk);
                 postToAppsScript('savePenduduk', 'Penduduk', newPenduduk); showModal("Berhasil", "Data disimpan.");
@@ -611,8 +647,11 @@
                 try {
                     const json = XLSX.utils.sheet_to_json(XLSX.read(evt.target.result, { type: 'binary' }).Sheets[XLSX.read(evt.target.result, { type: 'binary' }).SheetNames[0]]);
                     let importedCount = 0;
+                    let currentMaxId = state.penduduk.length > 0 ? state.penduduk.reduce((max, p) => p.id > max ? p.id : max, 0) : 0;
+                    
                     json.forEach(row => {
-                        const newId = state.penduduk.length > 0 ? Math.max(...state.penduduk.map(p => p.id)) + 1 : 1;
+                        currentMaxId++;
+                        const newId = currentMaxId;
                         let rawJk = String(row['Jenis Kelamin'] || row['L/P'] || '').trim().toLowerCase();
                         let finalJk = (rawJk === 'p' || rawJk === 'perempuan') ? 'P' : 'L';
                         const newPenduduk = {
