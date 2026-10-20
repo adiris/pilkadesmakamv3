@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>APLIKASI PILKADES MAKAM</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Plus Jakarta Sans', 'sans-serif'] },
+                    colors: { brand: { 50: '#eff6ff', 100: '#dbeafe', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 900: '#1e3a8a' } }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; }
+        .morph-transition { transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
+        .glass-card { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); border: 1px solid rgba(226, 232, 240, 0.8); }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="text-slate-800 antialiased selection:bg-blue-500 selection:text-white">
+
+    <div id="app" class="min-h-screen flex flex-col"></div>
+
+    <!-- Notification Modal -->
+    <div id="notificationModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm hidden">
+        <div class="bg-white rounded-2xl p-6 max-w-sm w-full mx-4 shadow-2xl transform morph-transition scale-95 opacity-0" id="modalBox">
+            <div id="modalIcon" class="w-12 h-12 rounded-full flex items-center justify-center text-xl mb-4 mx-auto"></div>
+            <h3 id="modalTitle" class="text-lg font-bold text-center mb-2"></h3>
+            <p id="modalMessage" class="text-sm text-slate-600 text-center mb-6"></p>
+            <button onclick="closeModal()" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition shadow-lg shadow-blue-500/30">Tutup</button>
+        </div>
+    </div>
+
+    <script>
+        const GLOBAL_DATABASE_URL = "https://script.google.com/macros/s/AKfycbzubynl-Lxq9DQkeKrc6CM1bSamZEKGUsRChx_GAl74Ofu7OWu6WAkSOGElr6IcLCg9/exec"; 
+
+        const DEFAULT_USERS = [
+            { name: "adi riswanto", pass: "123456", role: "Super Admin", dusun: "Semua" }
+        ];
+
+        let state = {
+            currentView: JSON.parse(localStorage.getItem('pilkades_currentUser')) ? 'adminDashboard' : 'portal', 
+            activeTab: 'dashboard', 
+            currentUser: JSON.parse(localStorage.getItem('pilkades_currentUser')) || null,
+            users: JSON.parse(localStorage.getItem('pilkades_users')) || DEFAULT_USERS,
+            penduduk: JSON.parse(localStorage.getItem('pilkades_penduduk')) || [],
+            calon: JSON.parse(localStorage.getItem('pilkades_calon')) || [],
+            suaraMasuk: JSON.parse(localStorage.getItem('pilkades_suaraMasuk')) || { sah: 0, tidakSah: 0, perolehan: {} },
+            sheetUrl: GLOBAL_DATABASE_URL || localStorage.getItem('pilkades_sheetUrl') || '',
+            editingPendudukId: null,
+            editingCalonId: null,
+            searchDusun: 'all',
+            searchKeyword: '',
+            currentPage: 1,
+            cekResult: null,
+            mobileMenuOpen: false
+        };
+
+        // AUTO-GENERATE 10.000 DUMMY DATA IF EMPTY
+        function generateDummyData() {
+            // Data sampel telah dikosongkan sesuai permintaan agar mulai dari 0.
+        }
+
+        function saveData() {
+            try {
+                localStorage.setItem('pilkades_penduduk', JSON.stringify(state.penduduk));
+                localStorage.setItem('pilkades_calon', JSON.stringify(state.calon));
+                localStorage.setItem('pilkades_suaraMasuk', JSON.stringify(state.suaraMasuk));
+                if (!GLOBAL_DATABASE_URL) localStorage.setItem('pilkades_sheetUrl', state.sheetUrl);
+                localStorage.setItem('pilkades_users', JSON.stringify(state.users));
+            } catch (e) {
+                console.error("Gagal menyimpan ke memori lokal browser:", e);
+            }
+        }
+
+        async function fetchFromAppsScript(isManualSync = false) {
+            if (!state.sheetUrl) return;
+            try {
+                const response = await fetch(state.sheetUrl);
+                const result = await response.json();
+                
+                if (result && result.penduduk) {
+                    state.penduduk = result.penduduk;
+                    if(result.calon && result.calon.length > 0) state.calon = result.calon;
+                    if(result.suara) state.suaraMasuk = result.suara;
+                    saveData();
+                    render();
+                    if(isManualSync) showModal("Koneksi Berhasil", "Data berhasil ditarik dari Spreadsheet.", "success");
+                }
+            } catch (err) {
+                console.warn("Gagal terhubung ke Spreadsheet:", err);
+                if (isManualSync) showModal("Koneksi Gagal", "Gagal terhubung ke URL Apps Script.", "error");
+            }
+        }
+
+        async function postToAppsScript(action, sheetName, payload) {
+            if (!state.sheetUrl) return;
+            try {
+                fetch(state.sheetUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({ action, sheetName, payload })
+                }).catch(e => console.log("Latar belakang: Pengiriman data diproses."));
+            } catch (err) {
+                console.warn("Gagal mengirim data:", err);
+            }
+        }
+
+        function showModal(title, message, type = 'success') {
+            const modal = document.getElementById('notificationModal');
+            const box = document.getElementById('modalBox');
+            const icon = document.getElementById('modalIcon');
+            document.getElementById('modalTitle').innerText = title;
+            document.getElementById('modalMessage').innerText = message;
+            
+            if(type === 'success') {
+                icon.className = "w-12 h-12 rounded-full flex items-center justify-center text-xl mb-4 mx-auto bg-emerald-100 text-emerald-600";
+                icon.innerHTML = '<i class="fa-solid fa-check"></i>';
+            } else if(type === 'warning') {
+                icon.className = "w-12 h-12 rounded-full flex items-center justify-center text-xl mb-4 mx-auto bg-amber-100 text-amber-600";
+                icon.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+            } else {
+                icon.className = "w-12 h-12 rounded-full flex items-center justify-center text-xl mb-4 mx-auto bg-rose-100 text-rose-600";
+                icon.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+            }
+
+            modal.classList.remove('hidden');
+            setTimeout(() => {
+                box.classList.remove('scale-95', 'opacity-0');
+                box.classList.add('scale-100', 'opacity-100');
+            }, 10);
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('notificationModal');
+            const box = document.getElementById('modalBox');
+            box.classList.remove('scale-100', 'opacity-100');
+            box.classList.add('scale-95', 'opacity-0');
+            setTimeout(() => { modal.classList.add('hidden'); }, 300);
+        }
+
+        function getAgeOnTargetDate(birthDateStr) {
+            if(!birthDateStr) return 0;
+            const bDate = new Date(birthDateStr);
+            const targetDate = new Date('2026-12-10');
+            let age = targetDate.getFullYear() - bDate.getFullYear();
+            const m = targetDate.getMonth() - bDate.getMonth();
+            if (m < 0 || (m === 0 && targetDate.getDate() < bDate.getDate())) age--;
+            return age;
+        }
+
+        function getPemilih17List() {
+            return state.penduduk.filter(p => getAgeOnTargetDate(p.tglLahir) >= 17);
+        }
+
+        function render() {
+            const app = document.getElementById('app');
+            if (state.currentView === 'portal') { app.innerHTML = renderPortal(); } 
+            else if (state.currentView === 'login') { app.innerHTML = renderLogin(); } 
+            else if (state.currentView === 'cekDpt') { app.innerHTML = renderCekDptPage(); } 
+            else if (state.currentView === 'adminDashboard') { app.innerHTML = renderAdminDashboard(); }
+        }
+
+        function renderPortal() {
+            const totalPenduduk = state.penduduk.length;
+            const list17 = getPemilih17List();
+            const lk17 = list17.filter(p => p.jk === 'L').length;
+            const pr17 = list17.filter(p => p.jk === 'P').length;
+            const totalDpt = list17.length;
+
+            const pemilihPerDusun = {
+                1: list17.filter(p => p.dusun === '1').length, 2: list17.filter(p => p.dusun === '2').length,
+                3: list17.filter(p => p.dusun === '3').length, 4: list17.filter(p => p.dusun === '4').length, 5: list17.filter(p => p.dusun === '5').length,
+            };
+
+            return `
+                <div class="min-h-screen bg-gradient-to-br from-blue-950 via-blue-900 to-slate-900 text-white flex flex-col justify-between">
+                    <header class="w-full px-4 sm:px-6 py-3 sm:py-4 flex justify-between items-center border-b border-white/10 backdrop-blur-md bg-blue-950/80 sticky top-0 z-40 shadow-md">
+                        <div class="flex items-center space-x-2 sm:space-x-3 cursor-pointer" onclick="state.currentView='portal'; render();">
+                            <div class="w-9 h-9 sm:w-10 sm:h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/30 flex-shrink-0">
+                                <i class="fa-solid fa-box-archive text-white text-sm sm:text-base"></i>
+                            </div>
+                            <div>
+                                <h1 class="font-extrabold text-sm sm:text-lg tracking-wide leading-tight">PILKADES MAKAM</h1>
+                                <p class="text-[10px] sm:text-xs text-blue-300">Desa Makam 2026</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center space-x-2 sm:space-x-3">
+                            <button onclick="state.currentView='cekDpt'; render();" class="px-3 sm:px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl text-xs sm:text-sm transition shadow-lg shadow-emerald-500/20 flex items-center space-x-1.5">
+                                <i class="fa-solid fa-magnifying-glass"></i><span>Cek DPT</span>
+                            </button>
+                            <button onclick="state.currentView='login'; render();" class="px-3 sm:px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl text-xs sm:text-sm transition shadow-lg shadow-blue-500/20 flex items-center space-x-1.5">
+                                <i class="fa-solid fa-user-shield"></i><span>Login</span>
+                            </button>
+                        </div>
+                    </header>
+
+                    <main class="flex-1 max-w-7xl mx-auto px-4 sm:px-6 py-8 sm:py-12 flex flex-col justify-center items-center text-center w-full">
+                        <span class="px-4 py-1.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-400/30 text-xs font-semibold tracking-wider uppercase mb-6 animate-pulse">
+                            Pemilihan Kepala Desa Serentak 2026
+                        </span>
+                        <h2 class="text-3xl sm:text-5xl md:text-6xl font-extrabold tracking-tight mb-4 bg-gradient-to-r from-white via-blue-100 to-blue-300 bg-clip-text text-transparent">
+                            PORTAL PILKADES DESA MAKAM
+                        </h2>
+                        <p class="text-slate-300 max-w-2xl text-sm sm:text-base md:text-lg mb-10">
+                            Sistem Administrasi Kependudukan, Daftar Pemilih Tetap (DPT), & Quick Count Real-Time.
+                        </p>
+
+                        ${!state.sheetUrl ? `
+                        <div class="mb-8 w-full max-w-4xl bg-amber-500/20 border border-amber-500/50 rounded-2xl p-4 text-center backdrop-blur-sm shadow-lg">
+                            <p class="text-amber-200 text-sm"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Perhatian Panitia:</strong> Database belum terhubung ke Google Spreadsheet.</p>
+                        </div>` : ''}
+
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6 w-full max-w-4xl mb-8">
+                            <div class="glass-card p-6 rounded-2xl text-slate-800 text-left border-l-4 border-l-blue-500 shadow-xl morph-transition hover:scale-105">
+                                <div class="flex justify-between items-start mb-4"><span class="text-xs font-bold uppercase tracking-wider text-slate-500">Jumlah Penduduk</span><div class="w-10 h-10 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center font-bold"><i class="fa-solid fa-users"></i></div></div>
+                                <h3 class="text-3xl font-extrabold text-slate-900">${totalPenduduk}</h3><p class="text-xs text-slate-500 mt-1">Total Jiwa Terdata</p>
+                            </div>
+                            <div class="glass-card p-6 rounded-2xl text-slate-800 text-left border-l-4 border-l-emerald-500 shadow-xl morph-transition hover:scale-105">
+                                <div class="flex justify-between items-start mb-4"><span class="text-xs font-bold uppercase tracking-wider text-slate-500">Jumlah DPT</span><div class="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center font-bold"><i class="fa-solid fa-id-card"></i></div></div>
+                                <h3 class="text-3xl font-extrabold text-slate-900">${totalDpt}</h3>
+                                <div class="mt-2 text-xs text-slate-600 flex justify-between border-t pt-2"><span>L: <strong class="text-blue-600">${lk17}</strong></span><span>P: <strong class="text-pink-600">${pr17}</strong></span></div>
+                            </div>
+                            <div class="glass-card p-6 rounded-2xl text-slate-800 text-left border-l-4 border-l-purple-500 shadow-xl morph-transition hover:scale-105">
+                                <div class="flex justify-between items-start mb-4"><span class="text-xs font-bold uppercase tracking-wider text-slate-500">Calon Kepala Desa</span><div class="w-10 h-10 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center font-bold"><i class="fa-solid fa-user-tie"></i></div></div>
+                                <h3 class="text-3xl font-extrabold text-slate-900">${state.calon.length}</h3><p class="text-xs text-slate-500 mt-1">Kandidat Terdaftar</p>
+                            </div>
+                        </div>
+
+                        <div class="w-full max-w-4xl bg-white/10 backdrop-blur-md border border-white/20 rounded-3xl p-6 sm:p-8 shadow-2xl mb-12 text-left">
+                            <h3 class="font-extrabold text-white text-base sm:text-lg mb-4 flex items-center space-x-2"><i class="fa-solid fa-map-location-dot text-emerald-400"></i><span>Jumlah Jiwa Pemilih Per Dusun</span></h3>
+                            <div class="grid grid-cols-2 sm:grid-cols-5 gap-4">
+                                ${[1,2,3,4,5].map(d => `
+                                <div class="p-4 rounded-2xl bg-white/10 border border-white/10 text-center backdrop-blur-sm ${d===5?'col-span-2 sm:col-span-1':''}">
+                                    <span class="text-xs font-bold text-slate-300 uppercase block mb-1">Dusun ${d}</span>
+                                    <strong class="text-2xl font-extrabold text-emerald-400">${pemilihPerDusun[d]}</strong>
+                                    <span class="text-[10px] text-slate-400 block mt-0.5">Pemilih</span>
+                                </div>`).join('')}
+                            </div>
+                        </div>
+
+                        ${state.calon.length > 0 ? `
+                        <div class="w-full max-w-5xl bg-slate-900/80 border border-slate-700/50 rounded-3xl p-6 sm:p-8 backdrop-blur-md shadow-2xl mb-12">
+                            <h3 class="text-xl font-bold mb-6 text-center text-blue-400 flex items-center justify-center space-x-2"><i class="fa-solid fa-award"></i><span>Kandidat Kepala Desa & Perolehan Suara</span></h3>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                ${state.calon.map(c => {
+                                    const suara = state.suaraMasuk.perolehan[c.id] || 0;
+                                    const totalSah = state.suaraMasuk.sah > 0 ? state.suaraMasuk.sah : 1;
+                                    const persentase = ((suara / totalSah) * 100).toFixed(1);
+                                    return `
+                                        <div class="bg-slate-800/90 border border-slate-700 rounded-2xl p-5 flex flex-col justify-between text-left shadow-lg">
+                                            <div>
+                                                <div class="flex justify-between items-center mb-3"><span class="px-3 py-1 bg-blue-600 text-white text-xs font-extrabold rounded-lg">No. Urut ${c.noUrut}</span><span class="text-xs text-slate-400"><i class="fa-solid fa-location-dot"></i> ${c.alamat}</span></div>
+                                                <h4 class="font-bold text-lg text-white mb-1">${c.nama}</h4><p class="text-xs text-blue-300 italic mb-4">"${c.visi}"</p>
+                                            </div>
+                                            <div class="border-t border-slate-700 pt-4 mt-2">
+                                                <div class="flex justify-between text-sm mb-1"><span class="text-slate-400">Perolehan Suara:</span><span class="font-extrabold text-emerald-400">${suara} Suara (${persentase}%)</span></div>
+                                                <div class="w-full bg-slate-700 h-2.5 rounded-full overflow-hidden"><div class="bg-gradient-to-r from-blue-500 to-emerald-500 h-full rounded-full" style="width: ${persentase}%"></div></div>
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>` : ''}
+                    </main>
+                    <footer class="w-full text-center py-6 border-t border-white/10 text-xs text-slate-400">Aplikasi ini dikembangkan oleh : Panitia Pilkades Makam 2026</footer>
+                </div>
+            `;
+        }
+
+        function renderCekDptPage() {
+            return `
+                <div class="min-h-screen bg-slate-50 flex flex-col justify-between">
+                    <header class="bg-white border-b border-slate-200 px-4 sm:px-6 py-3.5 sm:py-4 flex justify-between items-center shadow-sm sticky top-0 z-40">
+                        <div class="flex items-center space-x-2 sm:space-x-3 cursor-pointer" onclick="state.currentView='portal'; render();">
+                            <div class="w-8 h-8 sm:w-9 sm:h-9 bg-blue-600 rounded-xl flex items-center justify-center text-white"><i class="fa-solid fa-arrow-left text-sm"></i></div>
+                            <span class="font-bold text-slate-800 text-xs sm:text-sm">Kembali</span>
+                        </div>
+                        <h1 class="font-bold text-slate-700 text-xs sm:text-base text-right">Cek DPT</h1>
+                    </header>
+
+                    <main class="flex-1 max-w-xl mx-auto px-4 sm:px-6 py-8 sm:py-12 w-full flex flex-col justify-center">
+                        <div class="bg-white rounded-3xl p-6 sm:p-8 shadow-xl border border-slate-200">
+                            <div class="text-center mb-6">
+                                <div class="w-16 h-16 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center text-2xl mx-auto mb-3 shadow-inner"><i class="fa-solid fa-id-card-clip"></i></div>
+                                <h2 class="text-xl sm:text-2xl font-extrabold text-slate-900">Cek Status DPT</h2>
+                                <p class="text-xs text-slate-500 mt-1">Masukkan Nama dan NIK untuk verifikasi hak pilih.</p>
+                            </div>
+
+                            <form onsubmit="handleCekDpt(event)" class="space-y-4">
+                                <div><label class="block text-xs font-bold text-slate-700 uppercase mb-1">Nama Lengkap</label><input type="text" id="cekNama" required placeholder="Contoh: Ahmad Fauzi" class="w-full px-4 py-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm bg-slate-50"></div>
+                                <div><label class="block text-xs font-bold text-slate-700 uppercase mb-1">NIK (16 Digit)</label><input type="text" id="cekNik" required placeholder="16 digit NIK" class="w-full px-4 py-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm bg-slate-50"></div>
+                                <button type="submit" class="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition shadow-lg flex items-center justify-center space-x-2"><i class="fa-solid fa-magnifying-glass"></i><span>Cek DPT</span></button>
+                            </form>
+
+                            <div class="mt-6">
+                                ${state.cekResult ? `
+                                    <div class="p-4 rounded-2xl border ${state.cekResult.status ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800'} text-sm">
+                                        <div class="flex items-start space-x-3">
+                                            <i class="fa-solid ${state.cekResult.status ? 'fa-circle-check text-emerald-600' : 'fa-circle-exclamation text-rose-600'} text-xl mt-0.5"></i>
+                                            <div>
+                                                <h4 class="font-bold mb-1">${state.cekResult.title}</h4>
+                                                <p class="text-xs leading-relaxed">${state.cekResult.message}</p>
+                                                ${state.cekResult.detail ? `
+                                                    <div class="mt-3 pt-3 border-t border-current/20 text-xs space-y-1">
+                                                        <p><strong>Nama:</strong> ${state.cekResult.detail.nama}</p>
+                                                        <p><strong>NIK:</strong> ${state.cekResult.detail.nik}</p>
+                                                        <p><strong>Dusun:</strong> Dusun ${state.cekResult.detail.dusun} - RT ${state.cekResult.detail.rt}/RW ${state.cekResult.detail.rw}</p>
+                                                    </div>` : ''}
+                                            </div>
+                                        </div>
+                                    </div>` : ''}
+                            </div>
+                        </div>
+                    </main>
+                    <footer class="w-full text-center py-6 border-t border-slate-200 text-xs text-slate-500">Aplikasi ini dikembangkan oleh : Panitia Pilkades Makam 2026</footer>
+                </div>
+            `;
+        }
+
+        function handleCekDpt(e) {
+            e.preventDefault();
+            const nama = document.getElementById('cekNama').value.trim().toLowerCase();
+            const nik = document.getElementById('cekNik').value.trim();
+
+            const found = state.penduduk.find(p => p.nik === nik && p.nama.toLowerCase().includes(nama));
+            const list17 = getPemilih17List();
+            const isDpt = found && list17.some(p => p.nik === nik);
+
+            if (isDpt) {
+                state.cekResult = { status: true, title: "Anda Sudah Terdaftar di DPT", message: "Data Anda valid dan terdaftar sebagai Pemilih Tetap pada Pilkades Desa Makam 2026.", detail: found };
+            } else if (found) {
+                state.cekResult = { status: false, title: "Belum Memenuhi Syarat Usia", message: "Data Anda ditemukan di database, namun usia belum mencapai 17 tahun per tanggal pemilihan.", detail: found };
+            } else {
+                state.cekResult = { status: false, title: "Anda belum terdaftar", message: "Segera Hubungi Panitia Atau RT dengan menyertakan KTP dan KK.", detail: null };
+            }
+            render();
+        }
+
+        function renderLogin() {
+            return `
+                <div class="min-h-screen bg-slate-50 flex flex-col justify-between">
+                    <header class="bg-white border-b border-slate-200 px-4 sm:px-6 py-3.5 sm:py-4 flex justify-between items-center shadow-sm sticky top-0 z-40">
+                        <div class="flex items-center space-x-2 sm:space-x-3 cursor-pointer" onclick="state.currentView='portal'; render();">
+                            <div class="w-8 h-8 sm:w-9 sm:h-9 bg-blue-600 rounded-xl flex items-center justify-center text-white"><i class="fa-solid fa-arrow-left text-sm"></i></div>
+                            <span class="font-bold text-slate-800 text-xs sm:text-sm">Kembali</span>
+                        </div>
+                    </header>
+
+                    <main class="flex-1 max-w-md mx-auto px-4 sm:px-6 py-8 sm:py-12 w-full flex flex-col justify-center">
+                        <div class="bg-white rounded-3xl p-6 sm:p-8 shadow-xl border border-slate-200">
+                            <div class="text-center mb-6">
+                                <div class="w-16 h-16 bg-blue-600 text-white rounded-2xl flex items-center justify-center text-2xl mx-auto mb-3 shadow-lg shadow-blue-500/30"><i class="fa-solid fa-user-lock"></i></div>
+                                <h2 class="text-lg sm:text-xl font-extrabold text-slate-900 leading-snug">APLIKASI ADMINISTRASI PILKADES MAKAM</h2>
+                            </div>
+                            <form onsubmit="handleLogin(event)" class="space-y-4">
+                                <div><label class="block text-xs font-bold text-slate-700 uppercase mb-1">Nama Lengkap Panitia</label><input type="text" id="loginName" required placeholder="Ketik nama panitia" class="w-full px-4 py-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-blue-500 text-sm bg-slate-50"></div>
+                                <div><label class="block text-xs font-bold text-slate-700 uppercase mb-1">Password</label><input type="password" id="loginPass" required placeholder="Password" class="w-full px-4 py-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-blue-500 text-sm bg-slate-50"></div>
+                                <button type="submit" class="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition shadow-lg flex items-center justify-center space-x-2"><i class="fa-solid fa-right-to-bracket"></i><span>Masuk Aplikasi</span></button>
+                            </form>
+                        </div>
+                    </main>
+                    <footer class="w-full text-center py-6 border-t border-slate-200 text-xs text-slate-500">Aplikasi ini dikembangkan oleh : Panitia Pilkades Makam 2026</footer>
+                </div>
+            `;
+        }
+
+        function handleLogin(e) {
+            e.preventDefault();
+            const name = document.getElementById('loginName').value.trim().toLowerCase();
+            const pass = document.getElementById('loginPass').value.trim();
+            const matchedUser = state.users.find(u => u.name.toLowerCase() === name && u.pass === pass);
+            if (matchedUser) {
+                state.currentUser = matchedUser; state.currentView = 'adminDashboard'; state.activeTab = 'dashboard';
+                localStorage.setItem('pilkades_currentUser', JSON.stringify(matchedUser));
+                showModal("Login Berhasil", `Selamat datang, ${matchedUser.name}!`, 'success'); render();
+            } else {
+                showModal("Akses Ditolak", "Nama atau password salah.", 'error');
+            }
+        }
+
+        function handleLogout() { 
+            state.currentUser = null; 
+            state.currentView = 'portal'; 
+            localStorage.removeItem('pilkades_currentUser'); 
+            render(); 
+        }
+
+        function renderAdminDashboard() {
+            return `
+                <div class="min-h-screen flex bg-slate-100 flex-col md:flex-row">
+                    <aside class="w-64 bg-slate-900 text-white flex-col justify-between hidden md:flex sticky top-0 h-screen shadow-2xl flex-shrink-0 z-40">
+                        <div>
+                            <div class="p-6 border-b border-slate-800 flex items-center space-x-3">
+                                <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center font-bold text-lg shadow-lg"><i class="fa-solid fa-box-archive"></i></div>
+                                <div><h2 class="font-bold text-sm tracking-wide">PILKADES MAKAM</h2><p class="text-xs text-slate-400">Admin Panel</p></div>
+                            </div>
+                            <nav class="p-4 space-y-1.5 text-sm">
+                                ${['dashboard', 'penduduk', 'calon', 'suara', 'spreadsheetSync'].map(tab => `
+                                <button onclick="state.activeTab='${tab}'; render();" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition ${state.activeTab===tab ? 'bg-blue-600 text-white font-semibold shadow-lg' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}">
+                                    <i class="fa-solid ${tab==='dashboard'?'fa-chart-pie':tab==='penduduk'?'fa-users':tab==='calon'?'fa-user-tie':tab==='suara'?'fa-square-poll-vertical':'fa-file-excel'} w-5"></i>
+                                    <span>${tab==='spreadsheetSync'?'Seting Web Apps':tab.charAt(0).toUpperCase() + tab.slice(1).replace(/([A-Z])/g, ' $1').trim()}</span>
+                                </button>`).join('')}
+                            </nav>
+                        </div>
+                        <div class="p-4 border-t border-slate-800">
+                            <button onclick="handleLogout()" class="w-full py-2 bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white text-xs font-semibold rounded-xl transition flex items-center justify-center space-x-2"><i class="fa-solid fa-power-off"></i><span>Keluar</span></button>
+                        </div>
+                    </aside>
+
+                    <div class="flex-1 flex flex-col min-w-0 relative">
+                        <header class="bg-white/90 backdrop-blur-md border-b border-slate-200 px-4 sm:px-6 py-3.5 sm:py-4 flex justify-between items-center sticky top-0 z-40 shadow-sm gap-3">
+                            <div class="flex items-center space-x-3">
+                                <button onclick="state.mobileMenuOpen = !state.mobileMenuOpen; render();" class="md:hidden p-2 text-slate-700 hover:bg-slate-100 rounded-xl"><i class="fa-solid fa-bars text-lg"></i></button>
+                                <div><span class="text-[10px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider block">Admin Panel</span><span class="text-xs sm:text-sm font-extrabold text-blue-600 capitalize">${state.activeTab.replace(/([A-Z])/g, ' $1').trim()}</span></div>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <button onclick="state.currentView='cekDpt'; render();" class="px-3 sm:px-4 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-xl flex items-center space-x-2 border border-emerald-200 shadow-sm"><i class="fa-solid fa-magnifying-glass"></i><span class="hidden sm:inline">Cek DPT</span></button>
+                                <button onclick="state.currentView='portal'; render();" class="px-3 sm:px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition shadow-sm">Portal Publik</button>
+                            </div>
+                        </header>
+
+                        ${state.mobileMenuOpen ? `
+                            <div class="bg-slate-900 text-white md:hidden p-4 space-y-2 border-b border-slate-800 shadow-xl sticky top-[68px] z-30">
+                                ${['dashboard', 'penduduk', 'calon', 'suara', 'spreadsheetSync'].map(tab => `
+                                <button onclick="state.activeTab='${tab}'; state.mobileMenuOpen=false; render();" class="w-full text-left px-3 py-2 rounded-lg text-xs ${state.activeTab===tab?'bg-blue-600 text-white font-bold':'text-slate-300'}">${tab.toUpperCase()}</button>`).join('')}
+                                <button onclick="handleLogout()" class="w-full text-left px-3 py-2 rounded-lg text-xs text-rose-400 font-bold">Keluar</button>
+                            </div>` : ''}
+
+                        <main class="flex-1 p-4 sm:p-6 overflow-y-auto">
+                            ${renderActiveAdminTab()}
+                        </main>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderActiveAdminTab() {
+            if (state.activeTab === 'dashboard') {
+                const totalPenduduk = state.penduduk.length;
+                const list17 = getPemilih17List();
+                const lk17 = list17.filter(p => p.jk === 'L').length;
+                const pr17 = list17.filter(p => p.jk === 'P').length;
+                
+                return `
+                    <div class="space-y-6">
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
+                            <div class="bg-gradient-to-br from-blue-500 to-blue-700 text-white rounded-3xl p-6 shadow-xl relative overflow-hidden"><span class="px-3 py-1 bg-white/20 rounded-full text-xs font-bold uppercase tracking-wider">Total Penduduk</span><h3 class="text-3xl sm:text-4xl font-extrabold mt-4 mb-2">${totalPenduduk} Jiwa</h3></div>
+                            <div class="bg-gradient-to-br from-emerald-500 to-teal-700 text-white rounded-3xl p-6 shadow-xl relative overflow-hidden"><span class="px-3 py-1 bg-white/20 rounded-full text-xs font-bold uppercase tracking-wider">Jumlah DPT</span><h3 class="text-3xl sm:text-4xl font-extrabold mt-4 mb-3">${list17.length} Pemilih</h3><div class="bg-black/20 backdrop-blur-md rounded-2xl p-3 flex justify-between text-xs font-semibold"><span>L: <strong class="text-blue-200">${lk17}</strong></span><span>P: <strong class="text-pink-200">${pr17}</strong></span></div></div>
+                            <div class="bg-gradient-to-br from-purple-500 to-indigo-700 text-white rounded-3xl p-6 shadow-xl relative overflow-hidden"><span class="px-3 py-1 bg-white/20 rounded-full text-xs font-bold uppercase tracking-wider">Kandidat Kades</span><h3 class="text-3xl sm:text-4xl font-extrabold mt-4 mb-2">${state.calon.length} Kandidat</h3></div>
+                        </div>
+                    </div>
+                `;
+            } else if (state.activeTab === 'penduduk') { return renderPendudukManager(); } 
+            else if (state.activeTab === 'calon') { return renderCalonManager(); } 
+            else if (state.activeTab === 'suara') { return renderSuaraManager(); } 
+            else if (state.activeTab === 'spreadsheetSync') { return renderSpreadsheetSync(); }
+        }
+
+        function downloadDptCsv() {
+            let listDpt = getPemilih17List();
+            let csvContent = "data:text/csv;charset=utf-8,No,Nama Lengkap,NIK,Jenis Kelamin,Tanggal Lahir,Alamat,RT,RW,Dusun\n";
+            listDpt.forEach((p, index) => { csvContent += `${index+1},"${p.nama}","${p.nik}","${p.jk}","${p.tglLahir}","${p.alamat}",${p.rt},${p.rw},${p.dusun}\n`; });
+            const link = document.createElement("a"); link.setAttribute("href", encodeURI(csvContent)); link.setAttribute("download", "DPT_Pilkades_Makam_2026.csv"); document.body.appendChild(link); link.click(); document.body.removeChild(link);
+        }
+
+        function renderPendudukManager() {
+            let sortedList = [...state.penduduk].sort((a, b) => {
+                if(a.dusun !== b.dusun) return parseInt(a.dusun) - parseInt(b.dusun);
+                return a.nama.localeCompare(b.nama);
+            });
+            if(state.searchDusun !== 'all') sortedList = sortedList.filter(p => p.dusun === state.searchDusun);
+            if(state.searchKeyword) {
+                const kw = state.searchKeyword.toLowerCase();
+                sortedList = sortedList.filter(p => p.nama.toLowerCase().includes(kw) || p.nik.includes(kw));
+            }
+            
+            const itemsPerPage = 100;
+            const totalPages = Math.min(150, Math.ceil(sortedList.length / itemsPerPage) || 1);
+            if (state.currentPage > totalPages) state.currentPage = 1;
+            const startIndex = (state.currentPage - 1) * itemsPerPage;
+            const paginatedList = sortedList.slice(startIndex, startIndex + itemsPerPage);
+            const editingItem = state.editingPendudukId ? state.penduduk.find(p => p.id === state.editingPendudukId) : null;
+
+            return `
+                <div class="space-y-6">
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <div>
+                            <h2 class="text-xl sm:text-2xl font-extrabold text-slate-900">Manajemen Data Penduduk</h2>
+                            <p class="text-xs text-slate-500">Total terdata: ${state.penduduk.length} Jiwa.</p>
+                        </div>
+                        <div class="flex items-center space-x-2 w-full sm:w-auto">
+                            <button onclick="downloadDptCsv()" class="flex-1 sm:flex-none px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl transition shadow-lg shadow-sky-500/20 flex items-center justify-center space-x-2">
+                                <i class="fa-solid fa-download"></i><span>Download DPT</span>
+                            </button>
+                            <label class="flex-1 sm:flex-none px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition shadow-lg shadow-emerald-500/20 cursor-pointer flex items-center justify-center space-x-2">
+                                <input type="file" accept=".xlsx, .xls, .csv" class="hidden" onchange="handleExcelImport(event)">
+                                <i class="fa-solid fa-file-excel"></i><span>Import Excel</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="sticky top-[68px] sm:top-[76px] z-20 bg-white/95 backdrop-blur-md rounded-3xl p-5 shadow-2xl border-2 border-blue-500/30">
+                        <h3 class="font-extrabold text-slate-800 text-sm mb-3 flex items-center justify-between">
+                            <span class="flex items-center space-x-2"><i class="fa-solid ${editingItem ? 'fa-pen-to-square text-amber-500' : 'fa-user-plus text-blue-600'}"></i><span>${editingItem ? 'Edit Data Penduduk' : 'Form Input Cepat'}</span></span>
+                        </h3>
+                        <form onsubmit="handleSavePenduduk(event)" class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                            <div><label class="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">Nama Lengkap</label><input type="text" id="pNama" required value="${editingItem ? editingItem.nama : ''}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs"></div>
+                            <div><label class="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">NIK (16 Digit)</label><input type="text" id="pNik" required maxlength="16" value="${editingItem ? editingItem.nik : ''}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs"></div>
+                            <div><label class="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">Jenis Kelamin</label><select id="pJk" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs"><option value="L" ${editingItem && editingItem.jk==='L'?'selected':''}>L</option><option value="P" ${editingItem && editingItem.jk==='P'?'selected':''}>P</option></select></div>
+                            <div><label class="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">Tanggal Lahir</label><input type="date" id="pTgl" required value="${editingItem ? editingItem.tglLahir : ''}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs"></div>
+                            <div><label class="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">Alamat</label><input type="text" id="pAlamat" required value="${editingItem ? editingItem.alamat : ''}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs"></div>
+                            <div class="grid grid-cols-2 gap-2"><div><label class="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">RT</label><input type="text" id="pRt" required value="${editingItem ? editingItem.rt : ''}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs"></div><div><label class="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">RW</label><input type="text" id="pRw" required value="${editingItem ? editingItem.rw : ''}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs"></div></div>
+                            <div><label class="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">Dusun</label><select id="pDusun" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs"><option value="1" ${editingItem && editingItem.dusun==='1'?'selected':''}>Dusun 1</option><option value="2" ${editingItem && editingItem.dusun==='2'?'selected':''}>Dusun 2</option><option value="3" ${editingItem && editingItem.dusun==='3'?'selected':''}>Dusun 3</option><option value="4" ${editingItem && editingItem.dusun==='4'?'selected':''}>Dusun 4</option><option value="5" ${editingItem && editingItem.dusun==='5'?'selected':''}>Dusun 5</option></select></div>
+                            <div class="flex items-end space-x-2"><button type="submit" class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs"><i class="fa-solid fa-floppy-disk"></i> ${editingItem ? 'Update' : 'Simpan'}</button>${editingItem ? `<button type="button" onclick="state.editingPendudukId=null; render();" class="px-3 py-2 bg-slate-200 font-bold rounded-xl text-xs">Batal</button>` : ''}</div>
+                        </form>
+                    </div>
+
+                    <div class="bg-white rounded-3xl p-6 shadow-xl border border-slate-200 relative z-10">
+                        <div class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+                            <h3 class="font-extrabold text-slate-800 text-base">Daftar Penduduk (Hal ${state.currentPage} / ${totalPages})</h3>
+                            <div class="flex items-center space-x-3 w-full md:w-auto">
+                                <input type="text" oninput="state.searchKeyword=this.value; state.currentPage=1; render();" value="${state.searchKeyword}" placeholder="Cari Nama / NIK..." class="px-3 py-2 rounded-xl border border-slate-300 text-xs w-full md:w-48">
+                                <select onchange="state.searchDusun=this.value; state.currentPage=1; render();" class="px-3 py-2 rounded-xl border border-slate-300 text-xs"><option value="all">Semua Dusun</option><option value="1">Dusun 1</option><option value="2">Dusun 2</option><option value="3">Dusun 3</option><option value="4">Dusun 4</option><option value="5">Dusun 5</option></select>
+                            </div>
+                        </div>
+
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left text-xs">
+                                <thead class="bg-slate-100 text-slate-700 uppercase font-bold">
+                                    <tr><th class="p-3">No</th><th class="p-3">Nama Lengkap</th><th class="p-3">NIK</th><th class="p-3">L/P</th><th class="p-3">Tgl Lahir</th><th class="p-3">Alamat</th><th class="p-3">Dusun</th><th class="p-3 text-center">Aksi</th></tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    ${paginatedList.length === 0 ? `<tr><td colspan="8" class="text-center py-6 text-slate-400">Belum ada data penduduk.</td></tr>` : paginatedList.map((p, idx) => `
+                                        <tr class="hover:bg-slate-50 transition">
+                                            <td class="p-3 font-bold text-slate-500">${startIndex + idx + 1}</td><td class="p-3 font-extrabold">${p.nama}</td><td class="p-3 font-mono">${p.nik}</td><td class="p-3 font-bold">${p.jk}</td><td class="p-3">${p.tglLahir}</td><td class="p-3">${p.alamat} (RT ${p.rt}/${p.rw})</td><td class="p-3">Dusun ${p.dusun}</td>
+                                            <td class="p-3 text-center space-x-1"><button onclick="state.editingPendudukId=${p.id}; render();" class="p-1.5 bg-amber-100 text-amber-700 rounded-lg"><i class="fa-solid fa-pen"></i></button><button onclick="deletePenduduk(${p.id})" class="p-1.5 bg-rose-100 text-rose-700 rounded-lg"><i class="fa-solid fa-trash"></i></button></td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <div class="mt-6 flex flex-col sm:flex-row justify-between items-center gap-4 pt-4 border-t border-slate-200">
+                            <div class="flex items-center space-x-1 overflow-x-auto max-w-full pb-2">
+                                <button onclick="changePage(state.currentPage - 1)" ${state.currentPage <= 1 ? 'disabled' : ''} class="px-3 py-1.5 bg-slate-100 disabled:opacity-50 text-xs font-bold rounded-lg shrink-0">Prev</button>
+                                ${Array.from({length: totalPages}, (_, i) => {
+                                    const pageNum = i + 1;
+                                    if(pageNum === 1 || pageNum === totalPages || (pageNum >= state.currentPage - 2 && pageNum <= state.currentPage + 2)) {
+                                        return `<button onclick="state.currentPage=${pageNum}; render();" class="px-3 py-1.5 text-xs font-bold rounded-lg shrink-0 ${state.currentPage === pageNum ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-700'}">${pageNum}</button>`;
+                                    } else if (pageNum === state.currentPage - 3 || pageNum === state.currentPage + 3) {
+                                        return `<span class="px-1 text-slate-400">...</span>`;
+                                    } return '';
+                                }).join('')}
+                                <button onclick="changePage(state.currentPage + 1)" ${state.currentPage >= totalPages ? 'disabled' : ''} class="px-3 py-1.5 bg-slate-100 disabled:opacity-50 text-xs font-bold rounded-lg shrink-0">Next</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function changePage(newPage) { if(newPage >= 1 && newPage <= 150) { state.currentPage = newPage; render(); } }
+
+        function handleSavePenduduk(e) {
+            e.preventDefault();
+            const nama = document.getElementById('pNama').value.trim(); const nik = document.getElementById('pNik').value.trim();
+            const jk = document.getElementById('pJk').value; const tglLahir = document.getElementById('pTgl').value;
+            const alamat = document.getElementById('pAlamat').value.trim(); const rt = document.getElementById('pRt').value.trim();
+            const rw = document.getElementById('pRw').value.trim(); const dusun = document.getElementById('pDusun').value;
+
+            if (state.editingPendudukId) {
+                const idx = state.penduduk.findIndex(p => p.id === state.editingPendudukId);
+                if (idx !== -1) {
+                    state.penduduk[idx] = { ...state.penduduk[idx], nama, nik, jk, tglLahir, alamat, rt, rw, dusun };
+                    postToAppsScript('savePenduduk', 'Penduduk', state.penduduk[idx]);
+                }
+                state.editingPendudukId = null; showModal("Berhasil", "Data diperbarui.");
+            } else {
+                const newId = state.penduduk.length > 0 ? Math.max(...state.penduduk.map(p => p.id)) + 1 : 1;
+                const newPenduduk = { id: newId, nama, nik, jk, tglLahir, alamat, rt, rw, dusun };
+                state.penduduk.push(newPenduduk);
+                postToAppsScript('savePenduduk', 'Penduduk', newPenduduk); showModal("Berhasil", "Data disimpan.");
+            }
+            saveData(); render();
+        }
+
+        function deletePenduduk(id) {
+            if (confirm("Yakin hapus data penduduk ini?")) {
+                state.penduduk = state.penduduk.filter(p => p.id !== id);
+                postToAppsScript('deletePenduduk', 'Penduduk', {id: id});
+                saveData(); showModal("Terhapus", "Data dihapus.", "success"); render();
+            }
+        }
+
+        function handleExcelImport(e) {
+            const file = e.target.files[0]; if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                try {
+                    const json = XLSX.utils.sheet_to_json(XLSX.read(evt.target.result, { type: 'binary' }).Sheets[XLSX.read(evt.target.result, { type: 'binary' }).SheetNames[0]]);
+                    let importedCount = 0;
+                    json.forEach(row => {
+                        const newId = state.penduduk.length > 0 ? Math.max(...state.penduduk.map(p => p.id)) + 1 : 1;
+                        let rawJk = String(row['Jenis Kelamin'] || row['L/P'] || '').trim().toLowerCase();
+                        let finalJk = (rawJk === 'p' || rawJk === 'perempuan') ? 'P' : 'L';
+                        const newPenduduk = {
+                            id: newId, nama: String(row['Nama Lengkap'] || row['Nama'] || '').trim(), nik: String(row['NIK'] || '').trim(),
+                            jk: finalJk, tglLahir: row['Tanggal Lahir'] ? String(row['Tanggal Lahir']) : "1990-01-01",
+                            alamat: String(row['Alamat'] || '').trim(), rt: String(row['RT'] || '').trim(), rw: String(row['RW'] || '').trim(), dusun: String(row['Dusun'] || '1').replace(/\D/g,'') || '1'
+                        };
+                        if(newPenduduk.nama && newPenduduk.nik) { state.penduduk.push(newPenduduk); postToAppsScript('savePenduduk', 'Penduduk', newPenduduk); importedCount++; }
+                    });
+                    saveData(); render(); showModal("Import Berhasil", `Berhasil mengimport ${importedCount} data.`, "success");
+                } catch(err) { showModal("Import Gagal", "Format tidak sesuai.", "error"); }
+            };
+            reader.readAsBinaryString(file);
+        }
+
+        function renderCalonManager() {
+            const editingCalon = state.editingCalonId ? state.calon.find(c => c.id === state.editingCalonId) : null;
+            return `
+                <div class="space-y-6">
+                    <div class="bg-white rounded-3xl p-6 shadow-xl border border-slate-200">
+                        <h3 class="font-extrabold text-sm mb-4">${editingCalon ? 'Edit Calon Kepala Desa' : 'Input Calon Kepala Desa'}</h3>
+                        <form onsubmit="handleSaveCalon(event)" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div><label class="block text-xs font-bold uppercase mb-1">No Urut</label><input type="number" id="cNo" required value="${editingCalon ? editingCalon.noUrut : state.calon.length + 1}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"></div>
+                            <div><label class="block text-xs font-bold uppercase mb-1">Nama</label><input type="text" id="cNama" required value="${editingCalon ? editingCalon.nama : ''}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"></div>
+                            <div><label class="block text-xs font-bold uppercase mb-1">Alamat</label><input type="text" id="cAlamat" required value="${editingCalon ? editingCalon.alamat : ''}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"></div>
+                            <div><label class="block text-xs font-bold uppercase mb-1">Visi</label><input type="text" id="cVisi" required value="${editingCalon ? editingCalon.visi : ''}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"></div>
+                            <div class="md:col-span-2 flex items-center space-x-2"><button type="submit" class="flex-1 py-2.5 bg-blue-600 text-white font-bold rounded-xl">${editingCalon ? 'Update' : 'Simpan'}</button>${editingCalon ? `<button type="button" onclick="state.editingCalonId=null; render();" class="px-4 py-2.5 bg-slate-200 font-bold rounded-xl">Batal</button>` : ''}</div>
+                        </form>
+                    </div>
+                    <div class="bg-white rounded-3xl p-6 shadow-xl border border-slate-200">
+                        <h3 class="font-extrabold text-slate-800 text-base mb-4">Daftar Calon Kepala Desa</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left text-xs">
+                                <thead class="bg-slate-100 text-slate-700 uppercase font-bold"><tr><th class="p-3 text-center w-16">No</th><th class="p-3">Nama</th><th class="p-3">Alamat</th><th class="p-3">Visi</th><th class="p-3 text-center w-24">Aksi</th></tr></thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    ${state.calon.length === 0 ? `<tr><td colspan="5" class="text-center py-6 text-slate-400">Belum ada data calon.</td></tr>` : state.calon.sort((a,b)=>a.noUrut - b.noUrut).map(c => `
+                                        <tr class="hover:bg-slate-50 transition"><td class="p-3 font-bold text-slate-500 text-center">${c.noUrut}</td><td class="p-3 font-extrabold">${c.nama}</td><td class="p-3">${c.alamat}</td><td class="p-3 italic text-slate-500">"${c.visi}"</td><td class="p-3 text-center space-x-1"><button onclick="state.editingCalonId=${c.id}; render();" class="p-1.5 bg-amber-100 text-amber-700 rounded-lg"><i class="fa-solid fa-pen"></i></button><button onclick="deleteCalon(${c.id})" class="p-1.5 bg-rose-100 text-rose-700 rounded-lg"><i class="fa-solid fa-trash"></i></button></td></tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function handleSaveCalon(e) {
+            e.preventDefault(); 
+            const noUrut = parseInt(document.getElementById('cNo').value); const nama = document.getElementById('cNama').value.trim(); 
+            const alamat = document.getElementById('cAlamat').value.trim(); const visi = document.getElementById('cVisi').value.trim();
+            if (state.editingCalonId) {
+                const idx = state.calon.findIndex(c => c.id === state.editingCalonId);
+                if (idx !== -1) { state.calon[idx] = { ...state.calon[idx], noUrut, nama, alamat, visi }; postToAppsScript('saveCalon', 'Calon', state.calon[idx]); }
+                state.editingCalonId = null; showModal("Sukses", "Data diperbarui.");
+            } else {
+                const newId = state.calon.length > 0 ? Math.max(...state.calon.map(c => c.id)) + 1 : 1;
+                const newCalon = { id: newId, noUrut, nama, alamat, visi }; state.calon.push(newCalon); state.suaraMasuk.perolehan[newId] = 0; postToAppsScript('saveCalon', 'Calon', newCalon); showModal("Sukses", "Disimpan.");
+            }
+            saveData(); render();
+        }
+
+        function deleteCalon(id) {
+            if (confirm("Yakin hapus data calon?")) {
+                state.calon = state.calon.filter(c => c.id !== id);
+                if (state.suaraMasuk && state.suaraMasuk.perolehan) delete state.suaraMasuk.perolehan[id];
+                saveData(); showModal("Terhapus", "Data dihapus.", "success"); render();
+            }
+        }
+
+        function renderSuaraManager() {
+            return `
+                <div class="space-y-6">
+                    <div class="bg-white rounded-3xl p-6 shadow-xl border border-slate-200">
+                        <form onsubmit="handleSaveSuara(event)" class="space-y-6">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div><label class="block text-xs font-bold uppercase mb-1">Suara Sah</label><input type="number" id="suaraSah" required value="${state.suaraMasuk.sah}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"></div>
+                                <div><label class="block text-xs font-bold uppercase mb-1">Suara Tidak Sah</label><input type="number" id="suaraTidakSah" required value="${state.suaraMasuk.tidakSah}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"></div>
+                            </div>
+                            <div class="border-t border-slate-200 pt-4"><h3 class="font-extrabold text-sm mb-4">Perolehan Suara Calon</h3>
+                                <div class="space-y-4">
+                                    ${state.calon.map(c => `<div class="flex justify-between p-4 bg-slate-50 rounded-2xl"><div><span class="px-2 py-1 bg-blue-600 text-white text-xs font-bold rounded-lg">No ${c.noUrut}</span><h4 class="font-extrabold mt-1">${c.nama}</h4></div><div class="w-48"><label class="block text-[10px] font-bold uppercase mb-1">Suara</label><input type="number" id="suaraCalon_${c.id}" required value="${state.suaraMasuk.perolehan[c.id] || 0}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm font-bold text-emerald-600"></div></div>`).join('')}
+                                </div>
+                            </div>
+                            <button type="submit" class="w-full py-3.5 bg-blue-600 text-white font-bold rounded-xl">Simpan Suara</button>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        function handleSaveSuara(e) {
+            e.preventDefault(); const sah = parseInt(document.getElementById('suaraSah').value); const tidakSah = parseInt(document.getElementById('suaraTidakSah').value);
+            let perolehan = {}; state.calon.forEach(c => { perolehan[c.id] = parseInt(document.getElementById(`suaraCalon_${c.id}`).value) || 0; });
+            state.suaraMasuk = { sah, tidakSah, perolehan }; saveData(); postToAppsScript('saveSuara', 'Suara', state.suaraMasuk); showModal("Sukses", "Suara disimpan."); render();
+        }
+
+        function renderSpreadsheetSync() {
+            return `
+                <div class="space-y-6">
+                    <div class="bg-white rounded-3xl p-6 shadow-xl border border-slate-200">
+                        <h3 class="font-extrabold text-sm mb-4 flex items-center"><i class="fa-solid fa-link text-blue-600 mr-2"></i> Seting Database Google Spreadsheet</h3>
+                        <div class="mb-6 p-4 rounded-xl text-xs leading-relaxed bg-amber-50 border-amber-200 text-amber-800">
+                            <strong><i class="fa-solid fa-triangle-exclamation text-amber-600"></i> Informasi Penyimpanan Sinkronisasi</strong><br>
+                            Masukkan URL Web App Apps Script Anda di sini. Link yang Anda masukkan akan otomatis dikunci ke memori browser.
+                        </div>
+                        <div class="space-y-4">
+                            <div><label class="block text-xs font-bold uppercase mb-1">URL Web App Endpoint (Apps Script)</label><input type="text" id="syncUrl" value="${state.sheetUrl}" placeholder="https://script.google.com/macros/s/.../exec" class="w-full px-4 py-3 rounded-xl border bg-slate-50 border-slate-300 text-sm focus:ring-2 focus:ring-blue-500"></div>
+                            <button onclick="handleSaveSyncUrl()" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg flex justify-center items-center space-x-2"><i class="fa-solid fa-floppy-disk"></i><span>Simpan & Sinkronkan</span></button>
+                        </div>
+                        <div class="mt-4 p-4 rounded-xl text-xs bg-slate-100 border border-slate-200 text-slate-700">
+                            <strong>Status Koneksi:</strong> 
+                            ${state.sheetUrl ? '<span class="text-emerald-600 font-bold"><i class="fa-solid fa-check"></i> URL Tersimpan</span>' : '<span class="text-rose-600 font-bold"><i class="fa-solid fa-xmark"></i> Belum Terhubung</span>'}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function handleSaveSyncUrl() {
+            const inputUrl = document.getElementById('syncUrl').value.trim();
+            state.sheetUrl = inputUrl;
+            saveData();
+            showModal("Tersimpan", "URL Web App berhasil disimpan.");
+            
+            // Lakukan sinkronisasi langsung jika URL diisi
+            if(inputUrl) {
+                fetchFromAppsScript(true);
+            }
+            render();
+        }
+
+        window.onload = () => {
+            // 1. Generate 10.000 dummy data (jika database kosong)
+            generateDummyData();
+            
+            // 2. Coba tarik data dari Google Spreadsheet jika URL sudah ter-setting
+            fetchFromAppsScript();
+            
+            // 3. Render/Tampilkan tampilan awal aplikasi
+            render();
+        };
+    </script>
+</body>
+</html>
